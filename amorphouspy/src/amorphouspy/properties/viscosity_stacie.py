@@ -29,6 +29,7 @@ from stacie.model import SpectrumModel
 from stacie.utils import block_average
 
 from amorphouspy.fabrication.meltquench import melt_quench_simulation
+from amorphouspy.lammps.io import frames_from_melt_quench_result
 from amorphouspy.lammps.runner import Thermostat, _run_lammps_md
 
 # Voigt order used by STACIE: xx, yy, zz, yz, zx, xy
@@ -60,7 +61,8 @@ def _nve_segment(
     timestep: float,
     server_kwargs: dict[str, Any] | None,
     tmp_working_directory: str | Path | None,
-) -> tuple[Atoms, dict[str, Any]]:
+    n_dump: int | None = None,
+) -> tuple[Atoms, dict[str, Any], dict[str, Any]]:
     """Run one NVE segment from the velocities carried by ``structure``.
 
     The thermo frame at step 0 (the starting state) is dropped, so ``n_steps`` steps
@@ -72,6 +74,7 @@ def _nve_segment(
         n_ionic_steps=n_steps,
         timestep=timestep,
         ensemble="nve",
+        n_dump=n_dump,
         n_print_thermo=1,
         server_kwargs=server_kwargs,
         tmp_working_directory=tmp_working_directory,
@@ -87,7 +90,23 @@ def _nve_segment(
         "energy_tot_ev": np.asarray(generic["energy_tot"])[1:],
         "volume_a3": np.asarray(generic["volume"])[1:],
     }
-    return final_structure, segment
+    return final_structure, segment, generic
+
+
+def _stage_frames(template: Atoms, generic: dict[str, Any] | None, stage: str) -> list[Atoms]:
+    """Snapshots of one MD stage, wrapped into the cell and labelled with ``stage``."""
+    if generic is None or "positions" not in generic:
+        return []
+    frames = frames_from_melt_quench_result({"result": [generic]}, template)
+    for i, frame in enumerate(frames):
+        frame.wrap()
+        # Thermo data is written on a different cadence from the snapshots, so the per-frame
+        # thermo values attached by frames_from_melt_quench_result would be misaligned; drop them.
+        for key in ("temperature", "energy_pot", "energy_tot", "volume", "pressure", "step"):
+            frame.info.pop(key, None)
+        frame.info["stage"] = stage
+        frame.info["stage_frame"] = i
+    return frames
 
 
 def stacie_replica_md(
@@ -104,6 +123,7 @@ def stacie_replica_md(
     cooling_rate: float = 1e13,
     melt_equilibration_steps: int | None = None,
     melt_thermostat: Thermostat = "nose_hoover",
+    n_dump: int | None = None,
     server_kwargs: dict[str, Any] | None = None,
     tmp_working_directory: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -124,6 +144,7 @@ def stacie_replica_md(
         melt_equilibration_steps: Overrides the equilibration stages of the melt-quench
             protocol. ``None`` uses the protocol defaults.
         melt_thermostat: Thermostat of the melt-quench stages.
+        n_dump: If set, every stage writes a snapshot every ``n_dump`` steps, returned as ``trajectory``.
         server_kwargs: Forwarded to the LAMMPS runner, e.g. ``{"cores": 4}``.
         tmp_working_directory: Directory in which the LAMMPS run directories are kept.
 
@@ -135,6 +156,8 @@ def stacie_replica_md(
         - ``structure``: final structure, carrying velocities, for ``extend_nve_production``.
         - ``equilibration``: per-step data of the Langevin NPT stage (``temperature_k``, ``volume_a3``).
         - ``settings``: the arguments that define the replica (temperature, pressure, timestep, seeds).
+        - ``trajectory``: snapshots of all stages in order (``atoms.info["stage"]`` names the stage),
+          wrapped into the cell. Empty unless ``n_dump`` is set.
     """
     rng = np.random.default_rng(seed)
     # LAMMPS' Marsaglia generator (fix langevin, velocity create) accepts seeds in [1, 900_000_000].
@@ -150,6 +173,7 @@ def stacie_replica_md(
         equilibration_steps=melt_equilibration_steps,
         thermostat=melt_thermostat,
         seed=melt_seed,
+        n_dump=n_dump,
         server_kwargs=server_kwargs,
         tmp_working_directory=tmp_working_directory,
     )
@@ -164,15 +188,23 @@ def stacie_replica_md(
         npt_pressure=pressure,
         ensemble="npt_langevin",
         seed=langevin_seed,
+        n_dump=n_dump,
         n_print_thermo=max(1, equilibration_steps // 1000),
         server_kwargs=server_kwargs,
         tmp_working_directory=tmp_working_directory,
     )
     equil_generic = equil_parsed["generic"]
 
-    final_structure, production = _nve_segment(
-        equilibrated, potential, production_steps, timestep, server_kwargs, tmp_working_directory
+    final_structure, production, prod_generic = _nve_segment(
+        equilibrated, potential, production_steps, timestep, server_kwargs, tmp_working_directory, n_dump
     )
+
+    trajectory: list[Atoms] = []
+    if n_dump is not None:
+        for i, stage_generic in enumerate(mq_result["result"]):
+            trajectory += _stage_frames(structure, stage_generic, f"melt_quench_{i}")
+        trajectory += _stage_frames(structure, equil_generic, "npt_langevin")
+        trajectory += _stage_frames(structure, prod_generic, "nve")
 
     return {
         "production": production,
@@ -189,6 +221,7 @@ def stacie_replica_md(
             "melt_seed": melt_seed,
             "langevin_seed": langevin_seed,
         },
+        "trajectory": trajectory,
     }
 
 
@@ -198,6 +231,7 @@ def extend_nve_production(
     n_steps: int,
     server_kwargs: dict[str, Any] | None = None,
     tmp_working_directory: str | Path | None = None,
+    n_dump: int | None = None,
 ) -> dict[str, Any]:
     """Continue a replica's NVE production run and append the new steps.
 
@@ -210,20 +244,25 @@ def extend_nve_production(
         n_steps: Number of additional NVE steps.
         server_kwargs: Forwarded to the LAMMPS runner.
         tmp_working_directory: Directory in which the LAMMPS run directories are kept.
+        n_dump: If set, snapshots every ``n_dump`` steps are appended to ``trajectory``.
 
     Returns:
         A new replica dictionary with the extended ``production`` data and updated ``structure``.
     """
-    final_structure, segment = _nve_segment(
+    final_structure, segment, generic = _nve_segment(
         replica["structure"],
         potential,
         n_steps,
         replica["settings"]["timestep"],
         server_kwargs,
         tmp_working_directory,
+        n_dump,
     )
+    trajectory = list(replica.get("trajectory", []))
+    if n_dump is not None:
+        trajectory += _stage_frames(replica["structure"], generic, "nve")
     production = {key: np.concatenate([replica["production"][key], segment[key]]) for key in segment}
-    return {**replica, "production": production, "structure": final_structure}
+    return {**replica, "production": production, "structure": final_structure, "trajectory": trajectory}
 
 
 # ---------------------------------------------------------------------------

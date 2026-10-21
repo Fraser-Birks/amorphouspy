@@ -34,6 +34,7 @@ def replica(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict, object, Pat
         seed=7,
         melt_equilibration_steps=200,
         cooling_rate=1e15,
+        n_dump=100,
         tmp_working_directory=workdir,
     )
     return result, potential, workdir
@@ -60,6 +61,24 @@ def test_production_is_nve_without_velocity_reset(replica: tuple[dict, object, P
     lines = [line for path in workdir.glob("*/lmp.in") for line in path.read_text().splitlines()]
     velocity_lines = [line for line in lines if line.startswith("velocity")]
     assert len(velocity_lines) == 1
+
+
+def test_trajectory_covers_all_stages(replica: tuple[dict, object, Path]) -> None:
+    """With n_dump set, snapshots of every stage are returned in order, wrapped, ending at the final state."""
+    result, _, _ = replica
+    trajectory = result["trajectory"]
+    stages = [frame.info["stage"] for frame in trajectory]
+    assert stages[0] == "melt_quench_0"
+    assert stages[-1] == "nve"
+    assert stages.index("npt_langevin") < stages.index("nve")
+    assert all(frame.get_chemical_symbols() == trajectory[0].get_chemical_symbols() for frame in trajectory)
+    scaled = np.array([frame.get_scaled_positions(wrap=False) for frame in trajectory])
+    assert scaled.min() >= -1e-9
+    assert scaled.max() < 1 + 1e-9
+    final = result["structure"].copy()
+    final.wrap()
+    np.testing.assert_allclose(trajectory[-1].get_positions(), final.get_positions())
+    assert "temperature" not in trajectory[-1].info
 
 
 def test_seeds_are_valid_for_lammps(replica: tuple[dict, object, Path]) -> None:
