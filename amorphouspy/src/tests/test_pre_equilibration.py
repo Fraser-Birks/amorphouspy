@@ -16,8 +16,8 @@ def _sio2_atoms_dict() -> dict:
 
 def test_fix_override_contains_langevin_at_requested_temperature():
     """The override renders the Langevin + nve/limit fix pair at the given temperature."""
-    override = pre_equilibration_fix_override(4500.0)
-    assert override.startswith("langevinnve all langevin 4500 4500 0.01 48279")
+    override = pre_equilibration_fix_override(4500.0, seed=4242)
+    assert override.startswith("langevinnve all langevin 4500 4500 0.01 4242")
     assert "fix ensemblenve all nve/limit 0.5" in override
 
 
@@ -49,7 +49,7 @@ def test_melt_quench_simulation_runs_pre_equilibration_as_stage0(monkeypatch):
     captured = _run_melt_quench_with_fake_runner(monkeypatch)
     assert len(captured) > 1
     stage0 = captured[0]
-    assert stage0["input_control_file"]["fix"] == pre_equilibration_fix_override(4500.0)
+    assert stage0["input_control_file"]["fix"] == pre_equilibration_fix_override(4500.0, seed=12345)
     assert stage0["n_ionic_steps"] == 10_000
     assert stage0["ensemble"] == "nvt"
     for stage in captured[1:]:

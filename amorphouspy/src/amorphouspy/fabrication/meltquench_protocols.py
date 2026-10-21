@@ -116,7 +116,7 @@ def _pre_equilibration_stage(
         temperature=params.temperature_high,
         n_ionic_steps=10_000,
         initial_temperature=0,
-        input_control_file={"fix": pre_equilibration_fix_override(params.temperature_high)},
+        input_control_file={"fix": pre_equilibration_fix_override(params.temperature_high, params.seed)},
         ensemble="nvt",
     )
     history.append(parsed.get("generic", None))

@@ -13,7 +13,7 @@ Author: Achraf Atila (achraf.atila@bam.de)
 from __future__ import annotations
 
 
-def pre_equilibration_fix_override(melt_temperature: float) -> str:
+def pre_equilibration_fix_override(melt_temperature: float, seed: int) -> str:
     """Return the input-control ``fix`` override for a standalone pre-equilibration stage.
 
     Passing ``{"fix": pre_equilibration_fix_override(T)}`` as the runner's
@@ -24,11 +24,12 @@ def pre_equilibration_fix_override(melt_temperature: float) -> str:
 
     Args:
         melt_temperature: Target temperature (K) for the Langevin thermostat.
+        seed: Seed for the Langevin random forces. LAMMPS accepts 1 to 900,000,000.
 
     Returns:
         Value for the ``"fix"`` key of ``input_control_file``.
     """
     return (
-        f"langevinnve all langevin {melt_temperature:g} {melt_temperature:g} 0.01 48279\n"
+        f"langevinnve all langevin {melt_temperature:g} {melt_temperature:g} 0.01 {seed}\n"
         "fix ensemblenve all nve/limit 0.5"
     )

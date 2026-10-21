@@ -349,7 +349,7 @@ def test_protocol_stage0_uses_fix_override(name, mock_runner, mock_structure, mo
     assert stage0["initial_temperature"] == 0
     assert stage0["ensemble"] == "nvt"
     override = stage0["input_control_file"]["fix"]
-    assert "langevin 4321 4321 0.01 48279" in override
+    assert "langevin 4321 4321 0.01 12345" in override
     assert "nve/limit 0.5" in override
     for c in mock_runner.call_args_list:
         assert c.kwargs["potential"]["Config"].iloc[0] == ["line1", "line2"]
