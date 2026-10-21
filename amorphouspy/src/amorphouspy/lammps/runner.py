@@ -3,6 +3,7 @@
 This module contains shared functionality which is reused in the individual workflows.
 """
 
+import os
 import subprocess
 import tempfile
 import warnings
@@ -360,13 +361,39 @@ def _run_lammps_md(
 def get_lammps_command(server_kwargs: dict | None = None) -> str:
     """Generate a portable LAMMPS MPI command.
 
+    The full launch command can be overridden, e.g. to run a Kokkos/GPU build
+    with ``srun lmp -k on g 1 -sf kk -in lmp.in``. Precedence, highest first:
+
+    1. ``server_kwargs["lmp_command"]``
+    2. the ``LAMMPS_COMMAND`` environment variable
+    3. ``mpiexec -n <cores> lmp_mpi -in lmp.in``, with ``cores`` from
+       ``server_kwargs["cores"]`` (default 1)
+
+    An override replaces the whole command, so ``server_kwargs["cores"]`` is
+    not applied to it. It must read the input file ``lmp.in``, which is the
+    name lammpsparser writes.
+
     Args:
         server_kwargs: Server dictionary for example: {"cores": 2}.
 
     Returns:
         LAMMPS command as a string.
 
+    Raises:
+        ValueError: If an override command does not reference ``lmp.in``.
+
     """
+    override = None
+    if server_kwargs is not None and isinstance(server_kwargs, dict) and server_kwargs.get("lmp_command"):
+        override = server_kwargs["lmp_command"]
+    elif os.environ.get("LAMMPS_COMMAND"):
+        override = os.environ["LAMMPS_COMMAND"]
+    if override is not None:
+        if "lmp.in" not in override:
+            msg = f"LAMMPS command override must read the input file 'lmp.in', got: {override!r}"
+            raise ValueError(msg)
+        return override
+
     lmp_command = "mpiexec -n 1 lmp_mpi -in lmp.in"
     if server_kwargs is not None and isinstance(server_kwargs, dict) and "cores" in server_kwargs:
         lmp_command = f"mpiexec -n {server_kwargs['cores']} lmp_mpi -in lmp.in"

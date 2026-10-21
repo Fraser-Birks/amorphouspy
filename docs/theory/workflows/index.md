@@ -36,16 +36,22 @@ graph LR
 
 ### LAMMPS Command
 
-The LAMMPS executable path is determined by `get_lammps_command()`:
+The LAMMPS launch command is determined by `get_lammps_command()`:
 
 ```python
 from amorphouspy.lammps.runner import get_lammps_command
 
-cmd = get_lammps_command()
-# Returns: "lmp_mpi" (or custom path from environment)
+cmd = get_lammps_command({"cores": 4})
+# Returns: "mpiexec -n 4 lmp_mpi -in lmp.in"
 ```
 
-By default, it looks for `lmp_mpi` on the system PATH. Set the `LAMMPS_COMMAND` environment variable to override.
+By default, it runs `lmp_mpi` from the system PATH via `mpiexec`, with the rank count from `server_kwargs["cores"]` (default 1). To use a different launch command, e.g. a Kokkos/GPU build under SLURM, set the `LAMMPS_COMMAND` environment variable to the full command:
+
+```bash
+export LAMMPS_COMMAND="srun lmp -k on g 1 -sf kk -pk kokkos newton on neigh half -in lmp.in"
+```
+
+A `server_kwargs["lmp_command"]` entry overrides it for a single call. An override replaces the whole command (`cores` is not applied) and must read the input file `lmp.in`.
 
 ---
 

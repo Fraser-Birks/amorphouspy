@@ -334,11 +334,48 @@ def test_thermostat_ensembles() -> None:
         thermostat_ensembles("berendsen")  # ty: ignore[invalid-argument-type]
 
 
-def test_get_lammps_command_defaults_to_single_core() -> None:
+def test_get_lammps_command_defaults_to_single_core(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default command uses one MPI rank."""
+    monkeypatch.delenv("LAMMPS_COMMAND", raising=False)
     assert get_lammps_command() == "mpiexec -n 1 lmp_mpi -in lmp.in"
 
 
-def test_get_lammps_command_uses_server_cores() -> None:
+def test_get_lammps_command_uses_server_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     """Server kwargs with cores overrides rank count."""
+    monkeypatch.delenv("LAMMPS_COMMAND", raising=False)
     assert get_lammps_command({"cores": 4}) == "mpiexec -n 4 lmp_mpi -in lmp.in"
+
+
+def test_get_lammps_command_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LAMMPS_COMMAND replaces the whole command, ignoring cores."""
+    cmd = "srun lmp -k on g 1 -sf kk -pk kokkos newton on neigh half -in lmp.in"
+    monkeypatch.setenv("LAMMPS_COMMAND", cmd)
+    assert get_lammps_command() == cmd
+    assert get_lammps_command({"cores": 4}) == cmd
+
+
+def test_get_lammps_command_server_kwargs_override_beats_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """server_kwargs["lmp_command"] takes precedence over LAMMPS_COMMAND."""
+    monkeypatch.setenv("LAMMPS_COMMAND", "srun lmp -in lmp.in")
+    cmd = "mpiexec -n 2 lmp_custom -in lmp.in"
+    assert get_lammps_command({"cores": 4, "lmp_command": cmd}) == cmd
+
+
+def test_get_lammps_command_empty_env_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty LAMMPS_COMMAND falls back to the default command."""
+    monkeypatch.setenv("LAMMPS_COMMAND", "")
+    assert get_lammps_command({"cores": 2}) == "mpiexec -n 2 lmp_mpi -in lmp.in"
+
+
+@pytest.mark.parametrize("source", ["env", "server_kwargs"])
+def test_get_lammps_command_override_must_read_lmp_in(monkeypatch: pytest.MonkeyPatch, source: str) -> None:
+    """An override that does not reference lmp.in is rejected."""
+    bad = "srun lmp -k on g 1 -sf kk"
+    if source == "env":
+        monkeypatch.setenv("LAMMPS_COMMAND", bad)
+        server_kwargs = None
+    else:
+        monkeypatch.delenv("LAMMPS_COMMAND", raising=False)
+        server_kwargs = {"lmp_command": bad}
+    with pytest.raises(ValueError, match=r"lmp\.in"):
+        get_lammps_command(server_kwargs)
