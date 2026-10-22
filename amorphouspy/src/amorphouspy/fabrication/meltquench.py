@@ -35,6 +35,7 @@ def melt_quench_simulation(
     seed: int = 12345,
     tmp_working_directory: str | Path | None = None,
     pre_equilibrate: bool = True,
+    protocol: str | None = None,
 ) -> dict:  # pylint: disable=too-many-positional-arguments
     """Perform a melt-quench simulation using LAMMPS.
 
@@ -67,6 +68,10 @@ def melt_quench_simulation(
         pre_equilibrate: Run a Langevin + nve/limit pre-equilibration block at
             `temperature_high` before the first stage. Needed for randomly placed
             structures; set to False when the starting structure is already equilibrated.
+        protocol: Name of the melt-quench protocol (a key of ``PROTOCOL_MAP``, e.g. ``"shik"``).
+            If None, it is chosen from the potential's ``Name``. Set it to run a potential
+            without a protocol of its own, such as a machine-learned potential, with an
+            existing protocol; it also selects the default melt temperature.
 
     Returns:
         A dictionary containing the simulation steps and temperature data.
@@ -87,7 +92,7 @@ def melt_quench_simulation(
 
     """
     seconds_to_femtos = 1e15
-    potential_name = str(potential.loc[0, "Name"]).lower()
+    potential_name = protocol.lower() if protocol is not None else str(potential.loc[0, "Name"]).lower()
 
     if temperature_high is None:
         temperature_high = DEFAULT_MELT_TEMPERATURES.get(potential_name, 5000.0)

@@ -126,6 +126,8 @@ def stacie_replica_md(
     n_dump: int | None = None,
     server_kwargs: dict[str, Any] | None = None,
     tmp_working_directory: str | Path | None = None,
+    prep_potential: pd.DataFrame | None = None,
+    melt_protocol: str | None = None,
 ) -> dict[str, Any]:
     """Run one independent replica: melt-quench, Langevin NPT equilibration, NVE production.
 
@@ -147,6 +149,12 @@ def stacie_replica_md(
         n_dump: If set, every stage writes a snapshot every ``n_dump`` steps, returned as ``trajectory``.
         server_kwargs: Forwarded to the LAMMPS runner, e.g. ``{"cores": 4}``.
         tmp_working_directory: Directory in which the LAMMPS run directories are kept.
+        prep_potential: Potential for the melt-quench only, e.g. a cheap classical potential
+            to prepare the liquid for a machine-learned ``potential``. The equilibration and
+            production then use ``potential``; the equilibration must be long enough to relax
+            the liquid to it. ``None`` runs every stage with ``potential``.
+        melt_protocol: Melt-quench protocol name, passed to ``melt_quench_simulation`` as
+            ``protocol``. ``None`` chooses it from the melt-quench potential's ``Name``.
 
     Returns:
         A dictionary with:
@@ -165,7 +173,8 @@ def stacie_replica_md(
 
     mq_result = melt_quench_simulation(
         structure=structure,
-        potential=potential,
+        potential=potential if prep_potential is None else prep_potential,
+        protocol=melt_protocol,
         temperature_high=melt_temperature,
         temperature_low=temperature,
         timestep=timestep,

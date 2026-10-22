@@ -3,7 +3,10 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
+from amorphouspy.atoms.shared import get_element_types_dict
+from amorphouspy.fabrication import meltquench
 from amorphouspy.lammps.potentials.shik_potential import generate_shik_potential
 from amorphouspy.properties.viscosity_stacie import (
     anisotropic_pressure_components,
@@ -13,6 +16,7 @@ from amorphouspy.properties.viscosity_stacie import (
     stacie_viscosity,
     stacie_viscosity_convergence,
 )
+from ase import Atoms
 
 from amorphouspy import get_ase_structure, get_structure_dict
 
@@ -205,3 +209,72 @@ def test_nve_checks_flag_drift() -> None:
     assert checks["energy_drift_per_atom_kt"][0] == pytest.approx(0.0, abs=1e-12)
     assert checks["energy_drift_per_atom_kt"][1] == pytest.approx(0.1, rel=0.01)
     assert checks["max_abs_energy_drift_per_atom_kt"] == pytest.approx(0.1, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
+# A separate melt-quench potential and an explicit protocol
+# ---------------------------------------------------------------------------
+
+
+def _soft_atomic_potential(atoms_dict: dict) -> pd.DataFrame:
+    """A purely repulsive ``atom_style atomic`` potential, standing in for a machine-learned one."""
+    species = list(get_element_types_dict(atoms_dict["atoms"]))
+    config = ["atom_style atomic\n", "pair_style soft 2.0\n", "pair_coeff * * 20.0\n"]
+    return pd.DataFrame(
+        {"Name": ["soft"], "Filename": [""], "Model": ["soft"], "Species": [species], "Config": [config]}
+    )
+
+
+def _pair_styles(workdir: Path) -> list[str]:
+    """The pair_style line of every LAMMPS run in ``workdir``, in run order."""
+    inputs = sorted(workdir.glob("**/lmp.in"), key=lambda p: p.stat().st_mtime)
+    return [next(line for line in p.read_text().splitlines() if line.startswith("pair_style")) for p in inputs]
+
+
+def test_melt_quench_unknown_potential_needs_a_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A potential without a protocol of its own runs only with an explicit ``protocol``."""
+    potential = pd.DataFrame({"Name": ["mace"], "Config": [[]]})
+    structure = Atoms("O", positions=[[0, 0, 0]])
+    with pytest.raises(ValueError, match="Unknown potential: mace"):
+        meltquench.melt_quench_simulation(structure, potential, temperature_low=300.0, thermostat="nose_hoover")
+    used = {}
+
+    def fake_protocol(_runner: object, params: object) -> tuple[Atoms, list]:
+        used["potential"] = params.potential
+        used["temperature_high"] = params.temperature_high
+        return structure, []
+
+    monkeypatch.setitem(meltquench.PROTOCOL_MAP, "shik", fake_protocol)
+    meltquench.melt_quench_simulation(
+        structure, potential, temperature_low=300.0, thermostat="nose_hoover", protocol="shik"
+    )
+    assert used["potential"] is potential
+    assert used["temperature_high"] == 4000.0  # the protocol's default melt temperature
+
+
+@pytest.mark.parametrize("prepare_with_shik", [True, False])
+def test_prep_potential_and_melt_protocol(tmp_path: Path, *, prepare_with_shik: bool) -> None:
+    """Melt-quench with SHIK (charges) or the potential itself (SHIK protocol), then atomic MD."""
+    atoms_dict = get_structure_dict({"CaO": 25, "MgO": 25, "SiO2": 50}, target_atoms=100, random_seed=2)
+    structure = get_ase_structure(atoms_dict)
+    soft = _soft_atomic_potential(atoms_dict)
+    shik = generate_shik_potential(atoms_dict, output_dir=str(tmp_path / "tables"))
+    result = stacie_replica_md(
+        structure,
+        soft,
+        temperature=3000.0,
+        pressure=0.0001,
+        equilibration_steps=300,
+        production_steps=100,
+        seed=3,
+        melt_equilibration_steps=100,
+        cooling_rate=1e15,
+        tmp_working_directory=tmp_path,
+        prep_potential=shik if prepare_with_shik else None,
+        melt_protocol=None if prepare_with_shik else "shik",
+    )
+    assert len(result["production"]["temperature_k"]) == 100
+    styles = _pair_styles(tmp_path)
+    melt, md = styles[:-2], styles[-2:]  # the last two runs are the NPT equilibration and the NVE production
+    assert all(("coul/dsf" in s) == prepare_with_shik for s in melt)
+    assert all(s.split()[1] == "soft" for s in md)

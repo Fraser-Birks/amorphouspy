@@ -58,6 +58,7 @@ glass = result["structure"]     # Quenched ASE Atoms
 | `timestep` | `float` | `1.0` | MD timestep in femtoseconds |
 | `thermostat` | `str` | — (required) | `"nose_hoover"` or `"langevin"`; applies to every protocol stage after stage 0. Whether a stage runs NVT or NPT is fixed by the protocol |
 | `pre_equilibrate` | `bool` | `True` | Run the 10,000-step Langevin + `nve/limit` stage 0 at `temperature_high`. Needed for randomly placed structures; set `False` when the starting structure is already equilibrated (its history entry is then `None`). |
+| `protocol` | `str \| None` | `None` | Protocol to run (a key of `PROTOCOL_MAP`, e.g. `"shik"`). If `None`, it is chosen from the potential name. Set it for a potential without a protocol of its own, such as a machine-learned potential. |
 
 **Returns:** A dictionary with:
 
@@ -83,6 +84,10 @@ result = melt_quench_simulation(
     thermostat="nose_hoover",
 )
 ```
+
+A potential without a protocol of its own (for example a machine-learned potential) raises
+`Unknown potential` unless a protocol is named explicitly with `protocol="shik"` (or another key of
+`PROTOCOL_MAP`); the protocol then also sets the default melt temperature.
 
 ### PMMCS Protocol
 
